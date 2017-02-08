@@ -72,6 +72,7 @@ pub enum Error {
 }
 
 
+#[derive(Debug)]
 pub enum Regex {
     // Do we want to box this? It's pretty big...
     Wrap {
@@ -84,6 +85,7 @@ pub enum Regex {
     }
 }
 
+#[derive(Debug)]
 pub enum Captures<'t> {
     Wrap {
         inner: regex::Captures<'t>,
