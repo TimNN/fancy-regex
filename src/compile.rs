@@ -103,6 +103,16 @@ impl<'a> Compiler<'a> {
             // easy case, delegate entire subexpr
             return self.compile_delegates(&[ix]);
         }
+
+        // Optimization for toplevel <easy_expr>*<look_ahead>
+        if ix == 0 {
+            if let Expr::Concat(_) = *info.expr {
+                if let Ok(_) = self.compile_trailing_look_ahead() {
+                    return Ok(())
+                }
+            }
+        }
+
         match *info.expr {
             Expr::Empty => (),
             Expr::Literal{ ref val, casei } => {
@@ -190,6 +200,57 @@ impl<'a> Compiler<'a> {
             }
         }
         Ok(())
+    }
+
+    // Optimize <easy_expr>*<easy look_ahead> by
+    fn compile_trailing_look_ahead(&mut self) -> Result<()> {
+        println!("trying trailing look ahead optimization...");
+
+        let mut children = Vec::new();
+        let mut child_ix = 1;
+        loop {
+            children.push(child_ix);
+            child_ix = self.a.infos[child_ix].next_sibling;
+            if child_ix == 0 {
+                break;
+            }
+        }
+
+        let (&last, prefix) = children.split_last().unwrap();
+
+        if prefix.iter().any(|&p| self.a.infos[p].hard) {
+            println!("not applicable (hard prefix)");
+            return Err(Error::NotApplicable);
+        }
+
+        match *self.a.infos[last].expr {
+            Expr::LookAround(_, LookAround::LookAhead) => (),
+            _ => {
+                println!("not applicable (no trailing look ahead)");
+                return Err(Error::NotApplicable);
+            }
+        }
+
+        let la_idx = last + 1;
+
+        if self.a.infos[la_idx].hard {
+            println!("not applicable (hard look ahead)");
+            return Err(Error::NotApplicable);
+        }
+
+        println!("committed to optimization");
+
+        let mut del_idxs = prefix.to_owned();
+        del_idxs.push(la_idx);
+
+        let res = self.compile_delegates(&del_idxs);
+
+        match res {
+            Ok(_) => println!("optimization succeeded"),
+            Err(ref e) => println!("optimization failed: {:?}", e),
+        }
+
+        res
     }
 
     fn compile_concat(&mut self, ix: usize, hard: bool) -> Result<()> {

@@ -35,6 +35,7 @@ mod bench {
     use fancy_regex::analyze::Analysis;
     use fancy_regex::compile::compile;
     use fancy_regex::vm;
+    use fancy_regex::Regex as Fegex;
 
     #[bench]
     fn lifetime_re(b: &mut Bencher) {
@@ -92,4 +93,25 @@ mod bench {
         b.iter(|| vm::run(&p, &s, 0, 0))
     }
 
+    #[bench]
+    fn syntect_wc(b: &mut Bencher) {
+        const RE: &'static str = r#"[\s\S]*([_$[:alpha:]][_$[:alnum:]]*)\s*(\.)\s*(prototype)(?=\s*=\s*(\s*\b(async\s+)?function\b|\s*(\basync\s*)?([_$[:alpha:]][_$[:alnum:]]*|\(([^()]|\([^()]*\))*\))\s*=>))"#;
+        const SRC: &'static str = include_str!("../testdata/jquery.js");
+        // let r = Fegex::new(RE).unwrap();
+
+        let (e, br) = Expr::parse(RE).unwrap();
+        let a = Analysis::analyze(&e, & br);
+        let p = compile(&a).unwrap();
+
+        // println!("{:#?}", Expr::parse(RE));
+        // println!("{:#?}", p);
+
+        // b.iter(|| {
+        //     r.captures(SRC).unwrap()
+        // })
+
+        println!("{:?}", vm::run(&p, SRC, 0, 0));
+
+        b.iter(|| vm::run(&p, SRC, 0, 0).unwrap());
+    }
 }

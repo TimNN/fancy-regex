@@ -69,6 +69,9 @@ pub enum Error {
 
     // Run time errors
     StackOverflow,
+
+    // only used internally, will never be returne to the user
+    NotApplicable,
 }
 
 
@@ -112,33 +115,74 @@ impl Regex {
 
         // wrapper to search for re at arbitrary start position,
         // and to capture the match bounds
-        let e = Expr::Concat(vec![
-            Expr::Repeat {
-                child: Box::new(Expr::Any { newline: true }),
-                lo: 0, hi: usize::MAX, greedy: false
+
+        // build the wrapper in such a way that the trailing look ahead
+        // optimization remains applicable
+
+        let la_optimize: Option<(&[Expr], &Expr)> = match &raw_e {
+            &Expr::LookAround(ref sub, LookAround::LookAhead) => Some((&[], sub)),
+            &Expr::Concat(ref v) => match v.split_last() {
+                Some((&Expr::LookAround(ref sub, LookAround::LookAhead), tail)) => Some((tail, sub)),
+                _ => None,
             },
-            Expr::Group(Box::new(
-                raw_e
-            ))
-        ]);
+            _ => None,
+        };
+
+
+        let e;
+        match la_optimize {
+            Some((prefix, la)) => {
+                // the regex crate does not support empty groups we have to use
+                // non-empty group which nevertheless metaches an zero length
+                // string
+                let inner = if prefix.is_empty() {
+                    Expr::Repeat {
+                        child: Box::new(Expr::Literal {
+                            val: "a".into(),
+                            casei: false,
+                        }),
+                        lo: 0, hi: 0, greedy: true,
+                    }
+                } else {
+                    Expr::Concat(prefix.to_owned())
+                };
+
+                e = Expr::Concat(vec![
+                    Expr::Repeat {
+                        child: Box::new(Expr::Any { newline: true }),
+                        lo: 0, hi: usize::MAX, greedy: false
+                    },
+                    Expr::Group(Box::new(inner)),
+                    // Use an extra group, because the look ahead grouping is
+                    // lost during optimization (and then bad things happen)
+                    // FIXME: this may break things when capturing groups &
+                    // backreferences are used in the look ahead
+                    Expr::LookAround(Box::new(Expr::Group(Box::new(la.clone()))), LookAround::LookAhead),
+                ]);
+            }
+            None => {
+                e = Expr::Concat(vec![
+                    Expr::Repeat {
+                        child: Box::new(Expr::Any { newline: true }),
+                        lo: 0, hi: usize::MAX, greedy: false
+                    },
+                    Expr::Group(Box::new(
+                        raw_e.clone(),
+                    ))
+                ]);
+            }
+        }
+
+        // println!("{:#?}", e);
 
         let a = Analysis::analyze(&e, &backrefs);
 
         let inner_info = &a.infos[4];  // references inner expr
-        if !inner_info.hard {
+        if !la_optimize.is_some() && !inner_info.hard {
             // easy case, wrap regex
 
             // we do our own to_str because escapes are different
             let mut re_cooked = String::new();
-            // same as raw_e above, but it was moved, so traverse to find it
-            let raw_e = match e {
-                Expr::Concat(ref v) =>
-                    match v[1] {
-                        Expr::Group(ref child) => child,
-                        _ => unreachable!()
-                    },
-                _ => unreachable!()
-            };
             raw_e.to_str(&mut re_cooked, 0);
             let inner = try!(compile::compile_inner(&re_cooked));
             let inner1 = if inner_info.looks_left {
@@ -230,6 +274,9 @@ impl Regex {
             }
             Regex::Impl { ref prog, n_groups } => {
                 let result = try!(vm::run(prog, text, pos, 0));
+
+                // println!("{:#?}", result);
+
                 Ok(result.map(|mut saves| {
                     saves.truncate(n_groups * 2);
                     Captures::Impl {
@@ -326,7 +373,7 @@ impl<'t> Iterator for SubCaptures<'t> {
 
 // Access to the AST. This is public for now but may change.
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Expr {
     Empty,
     Any { newline: bool },
@@ -563,6 +610,45 @@ mod tests {
         ));
         e.to_str(&mut s, 0);
         assert_eq!(s, "(a|b)");
+    }
+
+    #[test]
+    fn mybackref() {
+        use super::Regex;
+
+        let re = Regex::new("(.)\\0").unwrap();
+
+        let (ex, br) = Expr::parse("(?=function\\b)").unwrap();
+        let a = ::Analysis::analyze(&ex, &br);
+
+        println!("{:#?}", ex);
+
+        println!("{:#?}", a);
+
+        println!("{:?}", re.is_match("aa"));
+        println!("{:?}", re.is_match("ab"));
+        println!("{:?}", re.is_match("caa"));
+        println!("{:?}", re.find("cdaa"));
+    }
+
+    #[test]
+    fn myla() {
+        let r = ::Regex::new("hello(?=function\\b)").unwrap();
+        println!("{:#?}", r);
+        println!("{:?}", r.find("hellofunction()"));
+    }
+
+    #[test]
+    fn myfail() {
+        let r = ::Regex::new(r#"(?=\}|,|('[^']*'|"[^"]*"|[_$[:alpha:]][_$[:alnum:]]*)\s*:)"#).unwrap();
+
+        println!("{:#?}", r);
+
+        let c = r.captures_from_pos("\tjquery: version,", 8).unwrap().unwrap();
+
+        println!("{:#?}", c);
+
+        c.pos(0).unwrap();
     }
 
     /*
